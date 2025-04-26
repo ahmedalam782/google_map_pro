@@ -8,9 +8,6 @@ import 'package:google_map_pro/home.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await EasyLocalization.ensureInitialized();
-  // GoogleMapConfig.initialize(
-  //   apiKey: 'AIzaSyARJKYuZLAoUWO0M68tJLDrbUjAz57FaGA',
-  // );
   await AppSharedPreferences.initialSharedPreference();
 
   SystemChrome.setPreferredOrientations(
