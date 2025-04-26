@@ -1,0 +1,7 @@
+{
+    "normal": "Normal",
+    "satellite": "Satellite",
+    "hybrid": "Hybrid",
+    "terrain": "Terrain",
+    "none": "None"
+}
