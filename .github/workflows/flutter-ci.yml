@@ -1,42 +1,126 @@
+name: Build and Upload Release APK
+
 on:
-  pull_request:
-    branches:
-      - main
-      - master
   push:
     branches:
-      - main
-      - master
-      - develop
-      - ui/auth
-name: "Build & Release"
-jobs:
-  build:
-    name: Build & Release
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-java@v3
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-          architecture: x64
+      - "**"
 
-      - run: flutter build apk --release --split-per-abi
-      - run: |
-          flutter build ios --no-codesign
-          cd build/ios/iphoneos
-          mkdir Payload
-          cd Payload
-          ln -s ../Runner.app
-          cd ..
-          zip -r app.ipa Payload
-      - name: Push to Releases
-        uses: ncipollo/release-action@v1
+jobs:
+  build_release:
+    if: contains(github.event.head_commit.message, 'build release')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Java
+        uses: actions/setup-java@v3
         with:
-          artifacts: "build/app/outputs/apk/release/*,build/ios/iphoneos/app.ipa"
-          tag: v1.0.${{ github.run_number }}
-          token: ${{ secrets.TOKEN }}
+          distribution: "temurin"
+          java-version: "17"
+          cache: "gradle"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.0"
+          channel: "stable"
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run Analyzer
+        run: flutter analyze
+        continue-on-error: true
+        # This step will not fail the workflow, but will log the results.
+
+      - name: Cache Flutter dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+            build/
+            android/.gradle/
+          key: ${{ runner.os }}-flutter-${{ hashFiles('**/*.gradle*','pubspec.lock') }}
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Extract Folder ID from commit message
+        id: extract_folder
+        run: |
+          FOLDER_ID=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'FOLDER_ID=\K\S+')
+          echo "folder_id=$FOLDER_ID" >> $GITHUB_OUTPUT
+
+      - name: Write Google credentials to file
+        run: echo '${{ secrets.GOOGLE_DRIVE_CREDENTIALS }}' > credentials.json
+
+      - name: Upload APK to Google Drive & Send Email
+        env:
+          FOLDER_ID: ${{ steps.extract_folder.outputs.folder_id }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          pip install --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+          cat > upload_and_email.py <<EOF
+          import os
+          import smtplib
+          from email.mime.text import MIMEText
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          # === Google Drive Upload ===
+          FOLDER_ID = os.environ['FOLDER_ID']
+          SCOPES = ['https://www.googleapis.com/auth/drive.file']
+          SERVICE_ACCOUNT_FILE = 'credentials.json'
+
+          credentials = service_account.Credentials.from_service_account_file(
+              SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+
+          service = build('drive', 'v3', credentials=credentials)
+
+          ref_name = os.environ.get('GITHUB_REF_NAME', 'unknown-branch')
+
+          file_name = f"app-release-{ref_name}.apk"
+
+          file_metadata = {
+              'name': file_name,
+              'parents': [FOLDER_ID]
+          }
+          media = MediaFileUpload(
+              'build/app/outputs/flutter-apk/app-release.apk',
+              mimetype='application/vnd.android.package-archive'
+          )
+          file = service.files().create(
+              body=file_metadata,
+              media_body=media,
+              fields='id, webViewLink'
+          ).execute()
+
+          file_link = file.get("webViewLink")
+          print("✅ File uploaded to Google Drive!")
+          print("📎 Link:", file_link)
+
+          # === Send Email ===
+          to_emails = [email.strip() for email in os.environ['EMAIL_RECEIVER'].split(',')]
+          msg = MIMEText(f"✅ APK build is complete!\n\n🔗 Download link:\n{file_link}")
+          msg['Subject'] = f"✅ New APK Build Available for {ref_name}"
+          msg['From'] = os.environ['EMAIL_USER']
+          msg['To'] = ', '.join(to_emails)
+
+          try:
+              with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                  server.login(os.environ['EMAIL_USER'], os.environ['EMAIL_PASS'])
+                  server.send_message(msg)
+                  print("📬 Email sent successfully to:", ', '.join(to_emails))
+          except Exception as e:
+              print("❌ Failed to send email:", e)
+          EOF
+          python3 upload_and_email.py
