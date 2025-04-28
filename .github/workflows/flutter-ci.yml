@@ -130,3 +130,5 @@ jobs:
               print("❌ Failed to send email:", e)
           EOF
           python3 upload_and_email.py
+
+    
