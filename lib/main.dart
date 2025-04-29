@@ -48,3 +48,4 @@ class GoogleMapPackage extends StatelessWidget {
     );
   }
 }
+
